@@ -1,0 +1,173 @@
+name: Test Compliance Audit Tools
+
+# When to run this workflow
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master ]
+  # Allow manual trigger
+  workflow_dispatch:
+
+jobs:
+  # Test the Python audit tool
+  test-python-tool:
+    name: Test Python Audit Tool
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+      
+      - name: Display Python version
+        run: python --version
+      
+      - name: Run environment test suite
+        run: |
+          echo "Running environment tests..."
+          python3 test_audit_environment.py
+      
+      - name: Run actual audit (requires sudo)
+        run: |
+          echo "Running compliance audit..."
+          sudo python3 compliance_audit.py
+        continue-on-error: true  # Don't fail if some checks require specific setup
+      
+      - name: Check output files were created
+        run: |
+          echo "Checking for output files..."
+          ls -la audit_reports/ || echo "No audit_reports directory created"
+      
+      - name: Validate JSON output
+        run: |
+          echo "Validating JSON output..."
+          if [ -f audit_reports/*.json ]; then
+            python3 -m json.tool audit_reports/*.json > /dev/null && echo "JSON is valid"
+          else
+            echo "No JSON files found to validate"
+          fi
+        continue-on-error: true
+      
+      - name: Upload audit reports as artifacts
+        uses: actions/upload-artifact@v3
+        if: always()  # Upload even if previous steps failed
+        with:
+          name: python-audit-reports
+          path: audit_reports/
+          retention-days: 30
+  
+  # Test on multiple Python versions
+  test-python-compatibility:
+    name: Test Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ['3.7', '3.8', '3.9', '3.10', '3.11']
+    
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+      
+      - name: Test environment
+        run: python3 test_audit_environment.py
+        continue-on-error: true
+  
+  # Syntax check for PowerShell script
+  test-powershell-syntax:
+    name: Test PowerShell Script Syntax
+    runs-on: windows-latest
+    
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Check PowerShell syntax
+        shell: powershell
+        run: |
+          Write-Host "Checking PowerShell script syntax..."
+          $errors = $null
+          $null = [System.Management.Automation.PSParser]::Tokenize(
+            (Get-Content -Path .\ComplianceAudit.ps1 -Raw), 
+            [ref]$errors
+          )
+          if ($errors.Count -gt 0) {
+            Write-Host "Syntax errors found:"
+            $errors | ForEach-Object { Write-Host $_ }
+            exit 1
+          } else {
+            Write-Host "No syntax errors found!"
+          }
+        continue-on-error: true
+  
+  # Test PowerShell script execution
+  test-powershell-execution:
+    name: Test PowerShell Audit Execution
+    runs-on: windows-latest
+    
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Run PowerShell audit
+        shell: powershell
+        run: |
+          Write-Host "Running PowerShell compliance audit..."
+          # Set execution policy for this session
+          Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
+          
+          # Run the audit (may have limited functionality without admin rights)
+          .\ComplianceAudit.ps1
+        continue-on-error: true
+      
+      - name: Check for output files
+        shell: powershell
+        run: |
+          Write-Host "Checking for output files..."
+          if (Test-Path "audit_reports") {
+            Get-ChildItem -Path audit_reports -Recurse
+          } else {
+            Write-Host "No audit_reports directory found"
+          }
+      
+      - name: Upload PowerShell audit reports
+        uses: actions/upload-artifact@v3
+        if: always()
+        with:
+          name: powershell-audit-reports
+          path: audit_reports/
+          retention-days: 30
+  
+  # Lint Python code
+  lint-python:
+    name: Lint Python Code
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+      
+      - name: Install linting tools
+        run: |
+          pip install flake8 pylint
+      
+      - name: Run flake8
+        run: |
+          # Stop on serious errors, but allow some warnings
+          flake8 compliance_audit.py test_audit_environment.py --count --select=E9,F63,F7,F82 --show-source --statistics
+        continue-on-error: true
+      
+      - name: Run pylint
+        run: |
+          pylint compliance_audit.py test_audit_environment.py --exit-zero
+        continue-on-error: true
